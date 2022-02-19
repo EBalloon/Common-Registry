@@ -431,7 +431,7 @@ bool ClearPFN(PMDL mdl)
 	return true;
 };
 
-PVOID
+void
 Sleep(
 	ULONG Milliseconds
 )
@@ -439,8 +439,6 @@ Sleep(
 	LARGE_INTEGER Timeout;
 	Timeout.QuadPart = -1 * 10000LL * (LONGLONG)Milliseconds;
 	KeDelayExecutionThread(KernelMode, FALSE, &Timeout);
-
-	return NULL;
 }
 
 void AttachProcess(PEPROCESS Process, uint64_t* OldAttach, bool IsAttached = false)
