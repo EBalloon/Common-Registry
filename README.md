@@ -1,3 +1,3 @@
-# POC Communcation via Registry/Reg
+# POC Communication via Registry/Reg
 
 
