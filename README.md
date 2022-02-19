@@ -1,3 +1,6 @@
-# POC Communication via Registry/Reg
+# POC Common-Registry
 
-
+Communication via Registry/Reg
+clearing NPF
+Spoofed Register Callback
+Custom AttachProcess
