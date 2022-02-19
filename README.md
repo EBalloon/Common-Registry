@@ -3,4 +3,4 @@
 Communication via Registry/Reg
 clearing NPF
 Spoofed Register Callback
-Custom AttachProcess
+Custom AttachProcess (from me)
