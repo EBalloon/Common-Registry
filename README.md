@@ -5,4 +5,4 @@
     Spoofed Register Callback
     Custom AttachProcess (by me)
   
-  ### Mapped the driver with KDMAPPER
+  ### Map the driver with KDMAPPER
