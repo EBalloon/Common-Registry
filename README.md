@@ -1,7 +1,7 @@
 # POC Common-Registry
 
     Communication via Registry/Reg
-    clearing NPF
+    clearing PFNs
     Spoofed Register Callback
     Custom AttachProcess (by me)
     
