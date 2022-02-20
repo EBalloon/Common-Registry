@@ -363,7 +363,7 @@ UINT_PTR LookupCodecave(UINT_PTR ModuleBase, INT Size)
 	{
 		auto* header = reinterpret_cast<IMAGE_SECTION_HEADER*>(header_offset);
 
-		if (strcmp((CHAR*)header->Name, ".data") == 0)
+		if (strcmp((CHAR*)header->Name, ".rdata") == 0)
 		{
 			start = (UINT_PTR)ModuleBase + header->PointerToRawData;
 			size = header->SizeOfRawData;
