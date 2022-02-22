@@ -119,13 +119,13 @@ DWORD AttachProcess(std::string processName) {
 
 int main()
 {
-	ProcessPid = AttachProcess("ProcessName.exe");
+	ProcessPid = AttachProcess("Paladins.exe");
 	std::cout << "ProcessPid: " << ProcessPid << std::endl;
 
 	if (!ProcessPid)
 		system("pause");
 
-	auto Base = GetModuleBase(L"ProcessName.exe");
+	auto Base = GetModuleBase(L"Paladins.exe");
 	std::cout << std::hex << "Base: 0x"  << Base << std::endl;
 
 	if (!Base)

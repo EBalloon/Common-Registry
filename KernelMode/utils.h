@@ -431,7 +431,7 @@ bool ClearPFN(PMDL mdl)
 	return true;
 };
 
-void
+PVOID
 Sleep(
 	ULONG Milliseconds
 )
@@ -439,6 +439,8 @@ Sleep(
 	LARGE_INTEGER Timeout;
 	Timeout.QuadPart = -1 * 10000LL * (LONGLONG)Milliseconds;
 	KeDelayExecutionThread(KernelMode, FALSE, &Timeout);
+
+	return NULL;
 }
 
 void AttachProcess(PEPROCESS Process, uint64_t* OldAttach, bool IsAttached = false)
@@ -509,6 +511,7 @@ NTSTATUS ReadVirtualMemory(
 	PVOID MappedKva;
 	PMDL Mdl;
 	BOOLEAN ShouldUseSourceAsUserVa;
+	BOOLEAN IsAttached;
 
 	ShouldUseSourceAsUserVa = Source <= MmHighestUserAddress ? TRUE : FALSE;
 
@@ -516,6 +519,10 @@ NTSTATUS ReadVirtualMemory(
 	//    Sets specified process's PML4 to the CR3
 	uint64_t OldAttach;
 	AttachProcess(Process, &OldAttach, true);
+	IsAttached = TRUE;
+
+	if (!MmIsAddressValid(Source))
+		goto _Exit;
 
 	// 2. Get the physical address corresponding to the user virtual memory
 	SourcePhysicalAddress = MmGetPhysicalAddress(
@@ -573,6 +580,11 @@ NTSTATUS ReadVirtualMemory(
 	MmUnmapIoSpace(MappedIoSpace, Size);
 	MmUnmapLockedPages(MappedKva, Mdl);
 	IoFreeMdl(Mdl);
+
+_Exit:
+
+	if (IsAttached)
+		DetachProcess(Process, OldAttach, true);
 
 	return STATUS_SUCCESS;
 }
