@@ -729,8 +729,8 @@ NTSTATUS RegisterCallback(
 	ListMap->Routine = PVOID(IsCodeCave);
 	ListMap->Context = Context;
 	ListMap->PendingDelete = FALSE;
-
 	ListMap->Cookie.QuadPart = 0; // put a random number
+	
 	InsertTailList(&CmiCallbackHead->ListEntryHead, &ListMap->ListEntryHead);
 
 	*Cookie = ListMap->Cookie;
