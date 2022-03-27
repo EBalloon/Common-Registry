@@ -401,7 +401,7 @@ UINT_PTR GetCodeCave()
 	Driver = GetModuleBase(L"peauth.sys");
 	if (Driver)
 	{
-		IsCodeCave = LookupCodecave(Driver, 12);
+		IsCodeCave = LookupCodecave(Driver, sizeof(ShellCode));
 		if (IsCodeCave) {
 			return IsCodeCave;
 		}
