@@ -531,7 +531,8 @@ NTSTATUS ReadVirtualMemory(
 	// 3. Detach from the process
 	//    Restores previous the current thread
 	DetachProcess(Process, OldAttach, true);
-
+	IsAttached = FALSE;
+	
 	if (!SourcePhysicalAddress.QuadPart)
 	{
 		return STATUS_INVALID_ADDRESS;
