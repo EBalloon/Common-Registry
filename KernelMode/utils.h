@@ -11,8 +11,6 @@ typedef float               FLOAT;
 typedef int                 PINT;
 typedef unsigned long long uint64_t;
 
-PKTHREAD CurrentThread = 0;
-
 extern "C" PLIST_ENTRY NTKERNELAPI PsLoadedModuleList;
 extern "C" PPEB NTKERNELAPI PsGetProcessPeb(PEPROCESS Process);
 extern "C" NTSTATUS NTKERNELAPI ZwQuerySystemInformation( DWORD32 systemInformationClass, PVOID systemInformation,
@@ -448,15 +446,12 @@ CopyList(IN PLIST_ENTRY Original,
 	IN PLIST_ENTRY Copy,
 	IN KPROCESSOR_MODE Mode)
 {
-	/* Check if the list for this mode is empty */
 	if (IsListEmpty(&Original[Mode]))
 	{
-		/* It is, all we need to do is initialize it */
 		InitializeListHead(&Copy[Mode]);
 	}
 	else
 	{
-		/* Copy the lists */
 		Copy[Mode].Flink = Original[Mode].Flink;
 		Copy[Mode].Blink = Original[Mode].Blink;
 		Original[Mode].Flink->Blink = &Copy[Mode];
@@ -465,17 +460,16 @@ CopyList(IN PLIST_ENTRY Original,
 }
 
 void
-KiMoveApcState(PKAPC_STATE OldState,
+MoveApcState(PKAPC_STATE OldState,
 	PKAPC_STATE NewState)
 {
-	/* Restore backup of Original Environment */
 	RtlCopyMemory(NewState, OldState, sizeof(KAPC_STATE));
 
-	/* Repair Lists */
 	CopyList(OldState->ApcListHead, NewState->ApcListHead, KernelMode);
 	CopyList(OldState->ApcListHead, NewState->ApcListHead, UserMode);
 }
 
+uintptr_t OldProcess;
 void AttachProcess(PEPROCESS NewProcess)
 {
 	PKTHREAD Thread = KeGetCurrentThread();
@@ -490,60 +484,60 @@ void AttachProcess(PEPROCESS NewProcess)
 		KeBugCheck(INVALID_PROCESS_ATTACH_ATTEMPT);
 		return;
 	}
-	else
-	{
-		KiMoveApcState(ApcState, *(PKAPC_STATE*)(uintptr_t(Thread) + 0x258)); // 0x258 = _KTHREAD::SavedApcState
 
-		InitializeListHead(&ApcState->ApcListHead[KernelMode]);
-		InitializeListHead(&ApcState->ApcListHead[UserMode]);
+	MoveApcState(ApcState, *(PKAPC_STATE*)(uintptr_t(Thread) + 0x258)); // 0x258 = _KTHREAD::SavedApcState
 
-		*(PEPROCESS*)(uintptr_t(ApcState) + 0x20) = NewProcess; // 0x20 = _KAPC_STATE::SavedApcState
-		*(UCHAR*)(uintptr_t(ApcState) + 0x28) = FALSE;          // 0x28 = _KAPC_STATE::InProgressFlags
-		*(UCHAR*)(uintptr_t(ApcState) + 0x29) = FALSE;          // 0x29 = _KAPC_STATE::KernelApcPending
-		*(UCHAR*)(uintptr_t(ApcState) + 0x2a) = FALSE;          // 0x2a = _KAPC_STATE::UserApcPendingAll
+	InitializeListHead(&ApcState->ApcListHead[KernelMode]);
+	InitializeListHead(&ApcState->ApcListHead[UserMode]);
 
-		if (*(PKAPC_STATE*)(uintptr_t(Thread) + 0x258) == *(PKAPC_STATE*)(uintptr_t(Thread) + 0x258)) {  // 0x258 = _KTHREAD::SavedApcState
-			*(UCHAR*)(uintptr_t(Thread) + 0x24a) = 1; // 0x24a = _KTHREAD::ApcStateIndex
-		}
+	OldProcess = *(uintptr_t*)(uintptr_t(ApcState) + 0x20);
 
-		auto DirectoryTableBase = *(uint64_t*)(uint64_t(NewProcess) + 0x28);  // 0x28 = _EPROCESS::DirectoryTableBase
-		__writecr3(DirectoryTableBase);
-	}
+	*(PEPROCESS*)(uintptr_t(ApcState) + 0x20) = NewProcess; // 0x20 = _KAPC_STATE::Process
+	*(UCHAR*)(uintptr_t(ApcState) + 0x28) = 0;				// 0x28 = _KAPC_STATE::InProgressFlags
+	*(UCHAR*)(uintptr_t(ApcState) + 0x29) = 0;				// 0x29 = _KAPC_STATE::KernelApcPending
+	*(UCHAR*)(uintptr_t(ApcState) + 0x2a) = 0;				// 0x2a = _KAPC_STATE::UserApcPendingAll
+
+	*(UCHAR*)(uintptr_t(Thread) + 0x24a) = 1; // 0x24a = _KTHREAD::ApcStateIndex
+
+	auto DirectoryTableBase = *(uint64_t*)(uint64_t(NewProcess) + 0x28);  // 0x28 = _EPROCESS::DirectoryTableBase
+	__writecr3(DirectoryTableBase);
 }
 
 void DetachProcess()
 {
 	PKTHREAD Thread = KeGetCurrentThread();
-	PKPROCESS Process;
+	PKAPC_STATE ApcState = *(PKAPC_STATE*)(uintptr_t(Thread) + 0x98); // 0x98 = _KTHREAD->ApcState
 
-	PKAPC_STATE ApcState = *(PKAPC_STATE*)(uintptr_t(Thread) + 0x98); // 0x98 = KTHREAD->ApcState
-
-	if ((*(UCHAR*)(uintptr_t(Thread) + 0x24a) == 0))
+	if ((*(UCHAR*)(uintptr_t(Thread) + 0x24a) == 0)) // 0x24a = KTHREAD->ApcStateIndex
 		return;
 
-	if ((ApcState->KernelApcInProgress) ||
+	if ((*(UCHAR*)(uintptr_t(ApcState) + 0x28)) ||  // 0x28 = _KAPC_STATE->InProgressFlags
 		!(IsListEmpty(&ApcState->ApcListHead[KernelMode])) ||
 		!(IsListEmpty(&ApcState->ApcListHead[UserMode])))
 	{
 		KeBugCheck(INVALID_PROCESS_DETACH_ATTEMPT);
 	}
 
-	Process = *(PEPROCESS*)(uintptr_t(ApcState) + 0x20); // 0x20 = _KAPC_STATE::Process
+	MoveApcState(*(PKAPC_STATE*)(uintptr_t(Thread) + 0x258), ApcState); // 0x258 = _KTHREAD::SavedApcState
 
-	KiMoveApcState(*(PKAPC_STATE*)(uintptr_t(Thread) + 0x258), ApcState); // 0x258 = _KTHREAD::SavedApcState
-	*(PEPROCESS*)(*(uintptr_t*)(uintptr_t(Thread) + 0x258) + 0x20) = NULL; // 0x258 = _KTHREAD::SavedApcState + 0x20 = _KAPC_STATE::Process
+	if (OldProcess)
+		*(uintptr_t*)(uintptr_t(ApcState) + 0x20) = OldProcess; // 0x20 = _KAPC_STATE::Process
 
-	*(UCHAR*)(uintptr_t(Thread) + 0x24a) = 0;
+	*(PEPROCESS*)(*(uintptr_t*)(uintptr_t(Thread) + 0x258) + 0x20) = 0; // 0x258 = _KTHREAD::SavedApcState + 0x20 = _KAPC_STATE::Process
+
+	*(UCHAR*)(uintptr_t(Thread) + 0x24a) = 0; // 0x24a = _KTHREAD::ApcStateIndex
 
 	auto DirectoryTableBase = *(uint64_t*)(uint64_t(*(PEPROCESS*)(uintptr_t(ApcState) + 0x20)) + 0x28); // 0x20 = _KAPC_STATE::Process + 0x28 = _EPROCESS::DirectoryTableBase
 	__writecr3(DirectoryTableBase);
 
 	if (!(IsListEmpty(&ApcState->ApcListHead[KernelMode])))
 	{
-		*(UCHAR*)(uint64_t(ApcState) + 0x29) = TRUE; // 0x20 = _KAPC_STATE::KernelApcPending
+		*(UCHAR*)(uint64_t(ApcState) + 0x29) = 1; // 0x29 = _KAPC_STATE::KernelApcPending
 	}
 
 	RemoveEntryList(&ApcState->ApcListHead[KernelMode]);
+
+	OldProcess = 0;
 }
 
 PHYSICAL_ADDRESS

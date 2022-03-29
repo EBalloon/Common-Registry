@@ -20,10 +20,7 @@ NTSTATUS RegistryCallback(PVOID callbackContext, PVOID arg1, PVOID arg2) {
 	PREQUEST Data = *reinterpret_cast<PREQUEST*>(preInfo->Data);
 
 	if (!Data)
-		return STATUS_SUCCESS;
-
-	if (!CurrentThread)
-		CurrentThread = KeGetCurrentThread();
+		return STATUS_SUCCESS;;
 
 	switch (Data->Type)
 	{
