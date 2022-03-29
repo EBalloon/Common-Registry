@@ -43,8 +43,14 @@ NTSTATUS RegistryCallback(PVOID callbackContext, PVOID arg1, PVOID arg2) {
 
 	// Write Memory
 	case 2:
-	{
-		
+	{		
+		auto MemoryInfo = PCOPY_MEMORY(Data->Instruction);
+		if (MemoryInfo->ProcessId && MemoryInfo->Source && MemoryInfo->Size)
+		{
+			auto Status = WriteProcessMemory(HANDLE(MemoryInfo->ProcessId), MemoryInfo->Source, &MemoryInfo->Destination, MemoryInfo->Size);
+			if (NT_SUCCESS(Status))
+				DbgPrintEx(0, 0, "Type: %d - Write Memory: %llu - Status: 0x%08X\n", Data->Type, uint64_t(MemoryInfo->Destination), Status);
+		}
 		break;
 	}
 

@@ -443,59 +443,124 @@ Sleep(
 	return NULL;
 }
 
-void AttachProcess(PEPROCESS Process, uint64_t* OldAttach, bool IsAttached = false)
+void
+CopyList(IN PLIST_ENTRY Original,
+	IN PLIST_ENTRY Copy,
+	IN KPROCESSOR_MODE Mode)
 {
-	uint64_t DirectoryTableBase;
-	uint64_t result;
-	uint64_t Value;
-
-	if (IsAttached)
+	/* Check if the list for this mode is empty */
+	if (IsListEmpty(&Original[Mode]))
 	{
-		//Attach to Process
-		*OldAttach = *(uint64_t*)(uint64_t(CurrentThread) + 0xB8);
-		*(uint64_t*)(uint64_t(CurrentThread) + 0xB8) = uint64_t(Process);
-	}
-
-	//Get DirectoryTableBase;
-	DirectoryTableBase = *(uint64_t*)(uint64_t(Process) + 0x28);
-	if ((DirectoryTableBase & 2) != 0)
-		DirectoryTableBase = DirectoryTableBase | 0x8000000000000000u;
-
-	// Write offset to DirectoryTableBase
-	__writegsqword(0x9000u, DirectoryTableBase);
-	__writecr3(DirectoryTableBase);
-
-	// Temp Control Register
-	Value = __readcr4();
-	if ((Value & 0x20080) != 0)
-	{
-		result = Value ^ 0x80;
-		__writecr4(Value ^ 0x80);
-		__writecr4(Value);
+		/* It is, all we need to do is initialize it */
+		InitializeListHead(&Copy[Mode]);
 	}
 	else
 	{
-		result = __readcr3();
-		__writecr3(result);
+		/* Copy the lists */
+		Copy[Mode].Flink = Original[Mode].Flink;
+		Copy[Mode].Blink = Original[Mode].Blink;
+		Original[Mode].Flink->Blink = &Copy[Mode];
+		Original[Mode].Blink->Flink = &Copy[Mode];
 	}
 }
 
-void DetachProcess(PEPROCESS Process, uint64_t OldAttach, bool IsAttached = false)
-{	
-	auto CurrentRunTime = *(ULONG*)(uint64_t(CurrentThread) + 0x50);
-	auto ExpectedRunTime = *(ULONG*)(uint64_t(CurrentThread) + 0x54);
+void
+KiMoveApcState(PKAPC_STATE OldState,
+	PKAPC_STATE NewState)
+{
+	/* Restore backup of Original Environment */
+	RtlCopyMemory(NewState, OldState, sizeof(KAPC_STATE));
 
-	if (IsAttached)
+	/* Repair Lists */
+	CopyList(OldState->ApcListHead, NewState->ApcListHead, KernelMode);
+	CopyList(OldState->ApcListHead, NewState->ApcListHead, UserMode);
+}
+
+void AttachProcess(PEPROCESS NewProcess)
+{
+	PKTHREAD Thread = KeGetCurrentThread();
+
+	PKAPC_STATE ApcState = *(PKAPC_STATE*)(uintptr_t(Thread) + 0x98); // 0x98 = _KTHREAD::ApcState
+
+	if (*(PEPROCESS*)(uintptr_t(ApcState) + 0x20) == NewProcess) // 0x20 = _KAPC_STATE::Process
+		return;
+
+	if ((*(UCHAR*)(uintptr_t(Thread) + 0x24a) != 0)) // 0x24a = _KTHREAD::ApcStateIndex
 	{
-		// restore to the old
-		*(uint64_t*)(uint64_t(CurrentThread) + 0xB8) = OldAttach;
+		KeBugCheck(INVALID_PROCESS_ATTACH_ATTEMPT);
+		return;
+	}
+	else
+	{
+		KiMoveApcState(ApcState, *(PKAPC_STATE*)(uintptr_t(Thread) + 0x258)); // 0x258 = _KTHREAD::SavedApcState
+
+		InitializeListHead(&ApcState->ApcListHead[KernelMode]);
+		InitializeListHead(&ApcState->ApcListHead[UserMode]);
+
+		*(PEPROCESS*)(uintptr_t(ApcState) + 0x20) = NewProcess; // 0x20 = _KAPC_STATE::SavedApcState
+		*(UCHAR*)(uintptr_t(ApcState) + 0x28) = FALSE;          // 0x28 = _KAPC_STATE::InProgressFlags
+		*(UCHAR*)(uintptr_t(ApcState) + 0x29) = FALSE;          // 0x29 = _KAPC_STATE::KernelApcPending
+		*(UCHAR*)(uintptr_t(ApcState) + 0x2a) = FALSE;          // 0x2a = _KAPC_STATE::UserApcPendingAll
+
+		if (*(PKAPC_STATE*)(uintptr_t(Thread) + 0x258) == *(PKAPC_STATE*)(uintptr_t(Thread) + 0x258)) {  // 0x258 = _KTHREAD::SavedApcState
+			*(UCHAR*)(uintptr_t(Thread) + 0x24a) = 1; // 0x24a = _KTHREAD::ApcStateIndex
+		}
+
+		auto DirectoryTableBase = *(uint64_t*)(uint64_t(NewProcess) + 0x28);  // 0x28 = _EPROCESS::DirectoryTableBase
+		__writecr3(DirectoryTableBase);
+	}
+}
+
+void DetachProcess()
+{
+	PKTHREAD Thread = KeGetCurrentThread();
+	PKPROCESS Process;
+
+	PKAPC_STATE ApcState = *(PKAPC_STATE*)(uintptr_t(Thread) + 0x98); // 0x98 = KTHREAD->ApcState
+
+	if ((*(UCHAR*)(uintptr_t(Thread) + 0x24a) == 0))
+		return;
+
+	if ((ApcState->KernelApcInProgress) ||
+		!(IsListEmpty(&ApcState->ApcListHead[KernelMode])) ||
+		!(IsListEmpty(&ApcState->ApcListHead[UserMode])))
+	{
+		KeBugCheck(INVALID_PROCESS_DETACH_ATTEMPT);
 	}
 
-	auto Time = CurrentRunTime / ExpectedRunTime;
-	if (!Time || Time > 4) Time = 1;
+	Process = *(PEPROCESS*)(uintptr_t(ApcState) + 0x20); // 0x20 = _KAPC_STATE::Process
 
-	// Due to the bad code we will put a sleep
-	Sleep(Time);
+	KiMoveApcState(*(PKAPC_STATE*)(uintptr_t(Thread) + 0x258), ApcState); // 0x258 = _KTHREAD::SavedApcState
+	*(PEPROCESS*)(*(uintptr_t*)(uintptr_t(Thread) + 0x258) + 0x20) = NULL; // 0x258 = _KTHREAD::SavedApcState + 0x20 = _KAPC_STATE::Process
+
+	*(UCHAR*)(uintptr_t(Thread) + 0x24a) = 0;
+
+	auto DirectoryTableBase = *(uint64_t*)(uint64_t(*(PEPROCESS*)(uintptr_t(ApcState) + 0x20)) + 0x28); // 0x20 = _KAPC_STATE::Process + 0x28 = _EPROCESS::DirectoryTableBase
+	__writecr3(DirectoryTableBase);
+
+	if (!(IsListEmpty(&ApcState->ApcListHead[KernelMode])))
+	{
+		*(UCHAR*)(uint64_t(ApcState) + 0x29) = TRUE; // 0x20 = _KAPC_STATE::KernelApcPending
+	}
+
+	RemoveEntryList(&ApcState->ApcListHead[KernelMode]);
+}
+
+PHYSICAL_ADDRESS
+SafeMmGetPhysicalAddress(PVOID BaseAddress)
+{
+	static BOOLEAN* KdEnteredDebugger = 0;
+	if (!KdEnteredDebugger)
+	{
+		UNICODE_STRING UniCodeFunctionName = RTL_CONSTANT_STRING(L"KdEnteredDebugger");
+		KdEnteredDebugger = reinterpret_cast<BOOLEAN*>(MmGetSystemRoutineAddress(&UniCodeFunctionName));
+	}
+
+	*KdEnteredDebugger = FALSE;
+	PHYSICAL_ADDRESS PhysicalAddress = MmGetPhysicalAddress(BaseAddress);
+	*KdEnteredDebugger = TRUE;
+
+	return PhysicalAddress;
 }
 
 NTSTATUS ReadVirtualMemory(
@@ -504,90 +569,98 @@ NTSTATUS ReadVirtualMemory(
 	PVOID Source,
 	SIZE_T Size)
 {
-	NTSTATUS ntStatus = STATUS_SUCCESS;
-	KAPC_STATE ApcState;
+	NTSTATUS ntStatus = STATUS_UNSUCCESSFUL;
 	PHYSICAL_ADDRESS SourcePhysicalAddress;
 	PVOID MappedIoSpace;
-	PVOID MappedKva;
-	PMDL Mdl;
-	BOOLEAN ShouldUseSourceAsUserVa;
 	BOOLEAN IsAttached;
-
-	ShouldUseSourceAsUserVa = Source <= MmHighestUserAddress ? TRUE : FALSE;
 
 	// 1. Attach to the process
 	//    Sets specified process's PML4 to the CR3
-	uint64_t OldAttach;
-	AttachProcess(Process, &OldAttach, true);
+	AttachProcess(Process);
 	IsAttached = TRUE;
 
 	if (!MmIsAddressValid(Source))
 		goto _Exit;
 
 	// 2. Get the physical address corresponding to the user virtual memory
-	SourcePhysicalAddress = MmGetPhysicalAddress(
-		ShouldUseSourceAsUserVa == TRUE ? Source : Destination);
+	SourcePhysicalAddress = SafeMmGetPhysicalAddress(Source);
 
 	// 3. Detach from the process
 	//    Restores previous the current thread
-	DetachProcess(Process, OldAttach, true);
+	DetachProcess();
 	IsAttached = FALSE;
-	
+
 	if (!SourcePhysicalAddress.QuadPart)
-	{
-		return STATUS_INVALID_ADDRESS;
-	}
+		return ntStatus;
 
 	// 4. Map an IO space for MDL
-	MappedIoSpace = MmMapIoSpace(SourcePhysicalAddress, Size, MmNonCached);
+	MappedIoSpace = MmMapIoSpaceEx(SourcePhysicalAddress, Size, PAGE_READWRITE);
 	if (!MappedIoSpace)
-	{
-		return STATUS_INSUFFICIENT_RESOURCES;
-	}
+		goto _Exit;
 
-	// 5. Allocate MDL
-	Mdl = IoAllocateMdl(MappedIoSpace, (ULONG)Size, FALSE, FALSE, NULL);
-	if (!Mdl)
-	{
-		MmUnmapIoSpace(MappedIoSpace, Size);
-		return STATUS_INSUFFICIENT_RESOURCES;
-	}
+	// 5. copy memory
+	memcpy(Destination, MappedIoSpace, Size);
 
-	// 6. Build MDL for non-paged pool
-	MmBuildMdlForNonPagedPool(Mdl);
-
-	// 7. Map to the KVA
-	MappedKva = MmMapLockedPagesSpecifyCache(
-		Mdl,
-		KernelMode,
-		MmNonCached,
-		NULL,
-		FALSE,
-		NormalPagePriority);
-
-	if (!MappedKva)
-	{
-		MmUnmapIoSpace(MappedIoSpace, Size);
-		IoFreeMdl(Mdl);
-		return STATUS_INSUFFICIENT_RESOURCES;
-	}
-
-	// 8. copy memory
-	memcpy(
-		ShouldUseSourceAsUserVa == TRUE ? Destination : MappedKva,
-		ShouldUseSourceAsUserVa == TRUE ? MappedKva : Destination,
-		Size);
-
+	// 6. Free Map
 	MmUnmapIoSpace(MappedIoSpace, Size);
-	MmUnmapLockedPages(MappedKva, Mdl);
-	IoFreeMdl(Mdl);
+
+	ntStatus = STATUS_SUCCESS;
 
 _Exit:
 
 	if (IsAttached)
-		DetachProcess(Process, OldAttach, true);
+		DetachProcess();
 
-	return STATUS_SUCCESS;
+	return ntStatus;
+}
+
+NTSTATUS WriteVirtualMemory(
+	PEPROCESS Process,
+	PVOID Destination,
+	PVOID Source,
+	SIZE_T Size)
+{
+	NTSTATUS ntStatus = STATUS_UNSUCCESSFUL;
+	PHYSICAL_ADDRESS SourcePhysicalAddress;
+	PVOID MappedIoSpace;
+	BOOLEAN IsAttached;
+
+	// 1. Attach to the process
+	  //    Sets specified process's PML4 to the CR3
+	AttachProcess(Process);
+	IsAttached = TRUE;
+
+	if (!MmIsAddressValid(Source))
+		goto _Exit;
+
+	// 2. Get the physical address corresponding to the user virtual memory
+	SourcePhysicalAddress = SafeMmGetPhysicalAddress(Source);
+
+	// 3. Detach from the process
+	//    Restores previous the current thread
+	DetachProcess();
+	IsAttached = FALSE;
+
+	if (!SourcePhysicalAddress.QuadPart)
+		return ntStatus;
+
+	// 4. Map an IO space for MDL
+	MappedIoSpace = MmMapIoSpaceEx(SourcePhysicalAddress, Size, PAGE_READWRITE);
+	if (!MappedIoSpace)
+		goto _Exit;
+
+	// 5. copy memory
+	memcpy(MappedIoSpace, Destination, Size);
+
+	// 6. Free Map
+	MmUnmapIoSpace(MappedIoSpace, Size);
+
+	ntStatus = STATUS_SUCCESS;
+
+_Exit:
+
+	if (IsAttached)
+		DetachProcess();
 }
 
 NTSTATUS ReadProcessMemory(HANDLE ProcessPid, PVOID Address, PVOID Buffer, SIZE_T Size)
@@ -603,6 +676,19 @@ NTSTATUS ReadProcessMemory(HANDLE ProcessPid, PVOID Address, PVOID Buffer, SIZE_
 	return ntStatus;
 }
 
+NTSTATUS WriteProcessMemory(HANDLE ProcessPid, PVOID Address, PVOID Buffer, SIZE_T Size)
+{
+	PEPROCESS Process = { 0 };
+	auto ntStatus = PsLookupProcessByProcessId(ProcessPid, &Process);
+	if (NT_SUCCESS(ntStatus) && Process)
+	{
+		ntStatus = WriteVirtualMemory(Process, Buffer, Address, Size);
+	}
+
+	ObDereferenceObject(Process);
+	return ntStatus;
+}
+
 PVOID GetModuleBaseProcess(
 	HANDLE ProcessId,
 	LPCWSTR ModuleName
@@ -611,23 +697,24 @@ PVOID GetModuleBaseProcess(
 	PVOID mBase = 0;
 	PEPROCESS Process = { 0 };
 
+	UNICODE_STRING module_name = RTL_CONSTANT_STRING(ModuleName);
 	if (ProcessId && NT_SUCCESS(PsLookupProcessByProcessId(HANDLE(ProcessId), &Process)) && Process)
 	{
-		uint64_t OldAttach;
-		AttachProcess(Process, &OldAttach);
-
 		PPEB pPeb = PsGetProcessPeb(Process);
+
+		AttachProcess(Process);
+
 		for (PLIST_ENTRY pListEntry = pPeb->Ldr->InMemoryOrderModuleList.Flink; pListEntry != &pPeb->Ldr->InMemoryOrderModuleList; pListEntry = pListEntry->Flink)
 		{
 			PLDR_DATA_TABLE_ENTRY pEntry = CONTAINING_RECORD(pListEntry, LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks);
 
-			if (RtlCompareMemory(pEntry->BaseDllName.Buffer, ModuleName, pEntry->BaseDllName.Length) == pEntry->BaseDllName.Length) {
+			if (RtlEqualUnicodeString(&pEntry->BaseDllName, &module_name, TRUE) == 0) {
 				mBase = pEntry->DllBase;
 				break;
 			}
 		}
 
-		DetachProcess(Process, OldAttach);
+		DetachProcess();
 	}
 
 	return mBase;

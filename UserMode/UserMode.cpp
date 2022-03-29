@@ -131,13 +131,11 @@ int main()
 	if (!Base)
 		system("pause");
 
-	while (TRUE)
-	{
-		auto Value = ReadMemory<uint64_t>(Base + 0x77);
-		printf("Value: %llu\n", Value);
+	auto Value = 1000;
+	WriteMemory(Base + 0x77, Value);
 
-		Sleep(1000);
-	}
+	Value = ReadMemory<uint64_t>(Base + 0x77);
+	printf("Value: %llu\n", Value);
 
 	system("pause");
 }
